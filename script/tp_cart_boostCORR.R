@@ -1,6 +1,8 @@
 ## Forestinecology - TP 1
 ### CART and boosting
 
+## set seed
+set.seed(20250505)
 
 ## load libraries
 library(tidyverse)
@@ -26,7 +28,6 @@ caret::confusionMatrix(iris$Species, pred_tree)
 
 ## create 10 train-test split to evaluate model prediction accuracy
 ## fill-in the dots
-set.seed(202501)
 err <- NULL
 for(i in 1:10){
   train_id <- sample(1:nrow(iris),
@@ -44,7 +45,7 @@ mean(err)
 ## play with the available argument and explore how it affects
 ## the resulting tree, aim at constructing a perfect tree
 ## fill in the dots
-control <- rpart.control(minsplit = 2, cp = 0.0001)
+control <- rpart.control(cp = 0.001, minsplit = 2)
 tree_tweak <- rpart(Species ~., data = iris, control = control)
 rpart.plot::rpart.plot(tree_tweak, extra = 1)
 
@@ -87,11 +88,12 @@ imp <- lgb.importance(gbm_basic)
 ### Frequency: Higher frequency indicates that the feature was selected often by the algorithm, though not necessarily with the highest impact.
 lgb.plot.importance(imp)
 
-## get interpretation
+## get interpretation of the effect of the variable on given predictions
 int <- lgb.interprete(model = gbm_basic,
                       data = data.matrix(airquality[-train_id,!names(airquality) == "Ozone"]),
                       1:4)
 lgb.plot.interpretation(int[[1]])
+## Temp. reduce the ozone concentration by 10 ppb compared to the average for this prediction
 
 ## explore response curve along gradient of temperature
 library(DALEX)
@@ -112,28 +114,39 @@ ggplot(airquality) +
             color = "red", linewidth = 1.25, linetype = "dashed")
 
 
-## then tweak params, see https://lightgbm.readthedocs.io/en/latest/Parameters.html
-## for the full list
-## fill in the dots
+## then tweak gbm params, see https://lightgbm.readthedocs.io/en/latest/Parameters.html
+## for the full list of options
 params <- list(
-  objective = "regression",
-  metric = ...,
-  learning_rate = ...,
-  num_leaves = ...,
-  feature_fraction = ..,
-  bagging_fraction = ...
+  objective = "regression", # what type of model to fit
+  metric = "rmse", # what metric to optimize
+  learning_rate = 0.01, # how fast does the algorithm learn from new trees
+  num_leaves = 35, # of many leaves per tree
+  feature_fraction = 0.75, # equivalent to mtry in random forest
+  bagging_fraction = 0.75 # proportion of observation to select by bootstrap
 )
 
 gbm_adv <- lgb.train(
   params = params,
   data = dat_train,
   valids = list(test = dat_test),
-  nrounds = ...,
-  early_stopping_rounds = ...
+  nrounds = 1000,
+  early_stopping_rounds = 25
 )
 
 ## compare with earlier results
-## comment
+pred <- predict(gbm_adv,
+                newdata = data.matrix(airquality[-train_id,!names(airquality) == "Ozone"]))
+
+## compute model performance metrics
+nrmse_adv <- RMSE(pred, airquality$Ozone[-train_id]) / mean(airquality$Ozone)
+abs_err_adv <- MAE(pred, airquality$Ozone[-train_id])
+r2_adv <- R2(pred, airquality$Ozone[-train_id])
+
+## get variable importance
+imp_adv <- lgb.importance(gbm_adv)
+lgb.plot.importance(imp_adv)
+lgb.plot.importance(imp)
+## slight changes in the importance but the ordering of variable importance remains 
 
 
 
@@ -158,15 +171,15 @@ dat_test <- lgb.Dataset(data = data.matrix(st_lau[-train_id, covars]),
 ## set params for the BRT
 ## fill in the dots
 params <- list(
-  objective = ...,
-  metric = ...,
-  learning_rate = ...,
-  num_leaves = ...,
-  feature_fraction = ...,
-  bagging_fraction = ...
+  objective = "binary",
+  metric = "auc",
+  learning_rate = 0.1,
+  num_leaves = 35,
+  feature_fraction = 0.75,
+  bagging_fraction = 0.75
 )
 
-gbm_adv <- lgb.train(
+gbm_lau <- lgb.train(
   params = params,
   data = dat_train,
   valids = list(test = dat_test),
@@ -175,24 +188,25 @@ gbm_adv <- lgb.train(
 )
 
 ## get model performance
-pred <- predict(gbm_adv, newdata = data.matrix(st_lau[-train_id, covars]),
+pred <- predict(gbm_lau, newdata = data.matrix(st_lau[-train_id, covars]),
                 type = "class")
 caret::confusionMatrix(factor(pred), factor(st_lau$starfish[-train_id]))
+## large number of false positive, absence are often confused as presence
 
 ## predict over space
-pred_xy <- predict(gbm_adv, newdata = data.matrix(st_lau[,covars]))
+pred_xy <- predict(gbm_lau, newdata = data.matrix(st_lau[,covars]))
 st_lau$pred <- pred_xy
 ggplot(st_lau, aes(x=longitude, y=latitude, color=pred)) +
   geom_point() +
   scale_color_continuous(type = "viridis")
 
 ## get variable importance
-imp <- lgb.importance(gbm_adv)
+imp <- lgb.importance(gbm_lau)
 lgb.plot.importance(imp, measure = "Cover")
 
 ## predict invertebrate effect on probs of presence of starfish
 explainer <- explain(
-  model = gbm_adv,
+  model = gbm_lau,
   data = data.matrix(st_lau[,covars]),
   y = st_lau$starfish,
   label = "LightGBM"
@@ -206,42 +220,35 @@ ggplot(st_lau) +
   geom_path(data=pdp_temp$agr_profiles, aes(x=`_x_`, y=`_yhat_`),
             color = "red", linewidth = 1.25, linetype = "dashed")
 
-## do the same steps with the variable urchin as response
+### do the same steps with the variable urchin as response
 
-### build model object
-
-### set params
-
-### fit model
-
-### extract model performance
-
-### get variable importance
-
-### plot response curves
-
-
-## test stability of lightgbm
-set.seed(202505)
-train_id <- sample(1:nrow(st_lau), size = ceiling(0.8 * nrow(st_lau)))
-covars <- which(!names(st_lau) %in% c("starfish", "urchin"))
-dat_train <- lgb.Dataset(data = data.matrix(st_lau[train_id, covars]),
+## build model object
+dat_urchtr <- lgb.Dataset(data = data.matrix(st_lau[train_id, covars]),
                          label = st_lau$starfish[train_id])
-dat_test <- lgb.Dataset(data = data.matrix(st_lau[-train_id, covars]),
+dat_urchte <- lgb.Dataset(data = data.matrix(st_lau[-train_id, covars]),
                         label = st_lau$starfish[-train_id])
 
-ms <- replicate(10, lgb.train(
+## set params 
+params <- list(
+  objective = "binary",
+  metric = "binary_error",
+  learning_rate = 0.1,
+  num_leaves = 75,
+  feature_fraction = 0.75,
+  bagging_fraction = 0.75
+)
+
+## fit model
+gbm_urch <- lgb.train(
   params = params,
-  data = dat_train,
-  valids = list(test = dat_test),
+  data = dat_urchtr,
+  valids = list(test = dat_urchte),
   nrounds = 1000,
   early_stopping_rounds = 50
-))
+)
 
-## get importance
-ii <- plyr::ldply(ms, function(m) lgb.importance(m))
-ii$rep <- rep(1:10, each=10)
+## get model performance
+pred <- predict(gbm_urch, newdata = data.matrix(st_lau[-train_id, covars]),
+                type = "class")
+caret::confusionMatrix(factor(pred), factor(st_lau$urchin[-train_id]))
 
-ggplot(ii, aes(x=Feature, y=Gain, color=rep)) +
-  geom_point() +
-  facet_wrap(vars(Feature), scales="free")
